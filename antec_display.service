@@ -1,0 +1,13 @@
+[Unit]
+Description=Antec Display Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/bin/antec_display_service.py
+WorkingDirectory=/usr/bin
+Restart=always
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
