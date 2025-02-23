@@ -6,6 +6,12 @@ import time
 import usb.core
 import usb.util
 
+try:
+    import pynvml
+    NVML_AVAILABLE = True
+except ImportError:
+    NVML_AVAILABLE = False
+
 CONFIG_FILE = "/etc/antec/sensors.conf"
 
 def load_config():
@@ -115,6 +121,22 @@ def read_temperature(path):
         print(f"Error: Temperature source not found at {path}!")
         return 0.0
 
+def get_nvidia_temperature():
+    """
+    Use the NVML library to query the temperature of the first NVIDIA GPU.
+    Reference: https://pypi.org/project/nvidia-ml-py/
+    :return: Temperature in °C (float).
+    """
+    try:
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)  # Assuming single GPU
+        temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+        pynvml.nvmlShutdown()
+        return float(temp)
+    except Exception as e:
+        print("Error reading Nvidia GPU temperature:", e)
+        return 0.0
+
 def generate_payload(cpu_temp, gpu_temp):
     """
     Generate the HID payload for the digital display.
@@ -173,30 +195,55 @@ def send_to_device(payload):
 
 def main():
     config = load_config()
+    use_nvidia = False
+
     if config:
         cpu_path = find_temp_file(config["cpu"]["sensor"], config["cpu"]["name"])
-        gpu_path = find_temp_file(config["gpu"]["sensor"], config["gpu"]["name"])
-        if not cpu_path or not gpu_path:
-            print("Error: Could not find temperature files for sensors specified in the config.")
-            return
+        if config["gpu"]["sensor"].lower() == "nvidia":
+            if NVML_AVAILABLE:
+                use_nvidia = True
+                gpu_path = None
+            else:
+                print("NVML library not available but 'nvidia' was specified in config.")
+                return
+        else:
+            gpu_path = find_temp_file(config["gpu"]["sensor"], config["gpu"]["name"])
+            if not cpu_path or not gpu_path:
+                print("Error: Could not find temperature files for sensors specified in the config.")
+                return
     else:
-        print("No config file found. Falling back to interactive sensor selection.")
         sensors = list_hwmon_sensors()
         if not sensors:
-            print("No sensors found!")
+            print("No hwmon sensors found!")
             return
         print("\nSelect CPU temperature source:")
         cpu_path = select_sensor(sensors)
-        print("\nSelect GPU temperature source:")
-        gpu_path = select_sensor(sensors)
+        print("\nFor GPU temperature,")
+        if NVML_AVAILABLE:
+            ans = input("Do you want to use the NVIDIA GPU sensor? (y/n): ").strip().lower()
+            if ans == 'y':
+                use_nvidia = True
+                gpu_path = None
+            else:
+                use_nvidia = False
+                print("Select GPU temperature source from available hwmon sensors:")
+                gpu_path = select_sensor(sensors)
+        else:
+            use_nvidia = False
+            print("Select GPU temperature source from available hwmon sensors:")
+            gpu_path = select_sensor(sensors)
 
     print("\nStarting temperature monitor...")
     while True:
         cpu_temp = read_temperature(cpu_path)
-        gpu_temp = read_temperature(gpu_path)
+        if use_nvidia:
+            gpu_temp = get_nvidia_temperature()
+        else:
+            gpu_temp = read_temperature(gpu_path)
         payload = generate_payload(cpu_temp, gpu_temp)
         send_to_device(payload)
         time.sleep(0.5)
 
 if __name__ == "__main__":
     main()
+
